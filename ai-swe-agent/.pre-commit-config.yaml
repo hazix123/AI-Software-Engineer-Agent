@@ -1,0 +1,70 @@
+default_language_version:
+  python: python3.12
+
+default_stages: [pre-commit]
+fail_fast: false
+
+repos:
+  # --- Hygiene ---------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1000]
+      - id: check-case-conflict
+      - id: debug-statements
+      # This system handles repository credentials. A leaked key here is not a
+      # hypothetical.
+      - id: detect-private-key
+      - id: no-commit-to-branch
+        args: [--branch, main]
+
+  # --- Lint (Ruff) -----------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+
+  # --- Format (Black owns formatting; Ruff's formatter stays off) ------------
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+
+  # --- Types -----------------------------------------------------------------
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        args: [--config-file=pyproject.toml]
+        files: ^src/aiswe/
+        additional_dependencies:
+          - pydantic>=2.9
+          - pydantic-settings>=2.6
+          - sqlalchemy[asyncio]>=2.0.36
+          - types-redis
+          - structlog
+          - fastapi
+
+  # --- Secrets ---------------------------------------------------------------
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
+        exclude: ^(\.env\.example|poetry\.lock|uv\.lock)$
+
+  # --- Dockerfile ------------------------------------------------------------
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.13.1-beta
+    hooks:
+      - id: hadolint-docker
+        args: [--ignore, DL3008, --ignore, DL3013]

@@ -1,0 +1,148 @@
+name: ai-swe-agent
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL. The pgvector image is used from day one so that M4 (embeddings)
+  # requires no image swap and no data migration.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: aiswe-postgres
+    environment:
+      POSTGRES_USER: aiswe
+      POSTGRES_PASSWORD: aiswe
+      POSTGRES_DB: aiswe
+      # C collation + faster checksums; matters once the symbol index is large.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # `pg_isready` alone returns true before the DB accepts writes; running a
+      # real query is what the API's own readiness check depends on.
+      test: ["CMD-SHELL", "pg_isready -U aiswe -d aiswe && psql -U aiswe -d aiswe -c 'SELECT 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Redis. Cache, locks, rate limits; from M5 also the run event bus + queue.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7.4-alpine
+    container_name: aiswe-redis
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 512mb
+      # Never evict: from M5 this holds the run queue. Silently dropping a
+      # queued run under memory pressure would be a data-loss bug.
+      - --maxmemory-policy
+      - noeviction
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Migrations run to completion BEFORE the API starts. Letting the API run its
+  # own migrations at boot means N replicas racing the same DDL.
+  # ---------------------------------------------------------------------------
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+      target: runtime
+    container_name: aiswe-migrate
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DB__DSN: postgresql+asyncpg://aiswe:aiswe@postgres:5432/aiswe
+      REDIS__DSN: redis://redis:6379/0
+      LOG__FORMAT: console
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # API.
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+      target: runtime
+    container_name: aiswe-api
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP__ENV: local
+      APP__DEBUG: "true"
+      DB__DSN: postgresql+asyncpg://aiswe:aiswe@postgres:5432/aiswe
+      REDIS__DSN: redis://redis:6379/0
+      LOG__FORMAT: console
+      LOG__LEVEL: DEBUG
+    ports:
+      - "8000:8000"
+    volumes:
+      # Live reload in local dev only. The production image ships its own copy.
+      - ./src:/app/src:ro
+    command:
+      - uvicorn
+      - aiswe.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/src
+      - --no-access-log
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Agent worker. Same image, different command. Enabled from M5.
+  #   docker compose --profile agents up
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+      target: runtime
+    container_name: aiswe-worker
+    profiles: ["agents"]
+    command: ["aiswe", "worker"]
+    environment:
+      DB__DSN: postgresql+asyncpg://aiswe:aiswe@postgres:5432/aiswe
+      REDIS__DSN: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

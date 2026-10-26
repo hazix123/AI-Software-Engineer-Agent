@@ -1,0 +1,188 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aiswe"
+version = "0.1.0"
+description = "AI Software Engineer Agent — multi-agent autonomous coding platform"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Proprietary" }
+authors = [{ name = "Manan Tanveer" }]
+
+# ---------------------------------------------------------------------------
+# Core runtime dependencies (M0-M1). Deliberately minimal: no LLM SDKs here.
+# ---------------------------------------------------------------------------
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    "redis>=5.2.0",
+    "structlog>=24.4.0",
+    "orjson>=3.10.0",
+    "python-multipart>=0.0.12",
+    "typer>=0.13.0",
+]
+
+[project.optional-dependencies]
+# --- M1: authentication -----------------------------------------------------
+auth = [
+    "pyjwt[crypto]>=2.10.0",
+    "argon2-cffi>=23.1.0",
+]
+
+# --- M2: LLM abstraction layer ---------------------------------------------
+agents = [
+    "langgraph>=0.2.50",
+    "langgraph-checkpoint-postgres>=2.0.0",
+    "anthropic>=0.40.0",
+    "openai>=1.57.0",
+    "google-genai>=0.3.0",
+    "tiktoken>=0.8.0",
+]
+
+# --- M3-M7: sandbox, indexing, browser -------------------------------------
+tools = [
+    "docker>=7.1.0",
+    "GitPython>=3.1.43",
+    "tree-sitter>=0.23.0",
+    "tree-sitter-language-pack>=0.3.0",
+    "playwright>=1.49.0",
+    "pgvector>=0.3.6",
+]
+
+# --- Observability ----------------------------------------------------------
+otel = [
+    "opentelemetry-sdk>=1.28.0",
+    "opentelemetry-instrumentation-fastapi>=0.49b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.49b0",
+    "opentelemetry-exporter-otlp>=1.28.0",
+    "prometheus-client>=0.21.0",
+]
+
+# --- Development ------------------------------------------------------------
+dev = [
+    "ruff>=0.8.0",
+    "black>=24.10.0",
+    "mypy>=1.13.0",
+    "pre-commit>=4.0.0",
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.28.0",
+    "testcontainers[postgres,redis]>=4.8.0",
+    "types-redis>=4.6.0",
+]
+
+[project.scripts]
+aiswe = "aiswe.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aiswe"]
+
+# ---------------------------------------------------------------------------
+# Ruff — linter + import sorter. Black owns formatting; Ruff does not format.
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",      # pycodestyle
+    "F",           # pyflakes
+    "I",           # isort
+    "N",           # pep8-naming
+    "UP",          # pyupgrade
+    "B",           # flake8-bugbear
+    "C4",          # comprehensions
+    "SIM",         # simplify
+    "TCH",         # type-checking imports
+    "ANN",         # missing annotations  <-- enforces "type hints everywhere"
+    "ASYNC",       # async correctness
+    "S",           # bandit security rules
+    "PT",          # pytest style
+    "RET",         # return simplification
+    "ARG",         # unused arguments
+    "PTH",         # prefer pathlib
+    "RUF",         # ruff-specific
+]
+ignore = [
+    "ANN401",  # allow typing.Any where genuinely needed
+    "B008",    # FastAPI Depends() in defaults is idiomatic
+    "S101",    # assert is allowed (pytest)
+    # ERA (commented-out code) is deliberately NOT enabled: the codebase uses
+    # commented milestone markers to show where M1-M9 wiring will attach.
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ANN", "ARG", "S105", "S106"]
+"src/aiswe/infrastructure/db/models/*" = ["RUF012"]
+# FastAPI resolves endpoint annotations at runtime via get_type_hints(). Moving
+# these imports into a TYPE_CHECKING block turns them into unresolvable
+# ForwardRefs and the app raises NameError on the first request.
+"src/aiswe/api/deps.py" = ["TCH"]
+"migrations/*" = ["ANN", "E501", "ERA"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["aiswe"]
+
+[tool.ruff.lint.flake8-type-checking]
+runtime-evaluated-base-classes = [
+    "pydantic.BaseModel",
+    "pydantic_settings.BaseSettings",
+    "sqlalchemy.orm.DeclarativeBase",
+]
+
+# ---------------------------------------------------------------------------
+# Black — the only formatter. Ruff's formatter is disabled to avoid two owners.
+# ---------------------------------------------------------------------------
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+extend-exclude = "migrations/versions"
+
+# ---------------------------------------------------------------------------
+# mypy — strict. The Clean Architecture boundary is only real if it type-checks.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+disallow_any_generics = true
+plugins = ["pydantic.mypy"]
+files = ["src/aiswe"]
+exclude = ["migrations/"]
+
+[[tool.mypy.overrides]]
+module = ["testcontainers.*", "pgvector.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q --strict-markers --strict-config"
+markers = [
+    "unit: pure, no I/O",
+    "integration: requires postgres/redis containers",
+    "e2e: full stack",
+]
+
+[tool.coverage.run]
+source = ["src/aiswe"]
+branch = true
+omit = ["*/migrations/*", "*/__init__.py"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 70
